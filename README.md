@@ -129,10 +129,47 @@ booklore-tg-bot/
 │   └── downloader/        # File download functionality
 ├── configs/               # Configuration templates
 ├── downloads/             # Default download folder
+├── .github/workflows/     # GitHub Actions workflows
 ├── Dockerfile            # Docker configuration
 ├── docker-compose.yml    # Docker Compose setup
+├── renovate.json         # Renovate configuration
 └── README.md             # This file
 ```
+
+## CI/CD
+
+### Automated Docker Builds
+
+This repository uses GitHub Actions to automatically build and publish Docker images:
+
+- **Triggers**: Pushes to `main` branch and pull requests
+- **Registry**: GitHub Container Registry (ghcr.io)
+- **Tags**:
+  - `main` branch → `latest` tag
+  - Pull requests → `pr-{number}` tag
+  - Commits → `{branch}-{commit-sha}` tag
+- **Concurrency**: Builds are cancelled when new ones start to avoid resource waste
+
+### Using Pre-built Images
+
+You can use the pre-built Docker image instead of building locally:
+
+```yaml
+# docker-compose.yml
+services:
+  telegram-bot:
+    image: ghcr.io/brauni/booklore-tg-bot:latest
+    volumes:
+      - ./downloads:/app/downloads
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ALLOWED_USER_IDS=${ALLOWED_USER_IDS}
+      - DOWNLOAD_FOLDER=/app/downloads
+```
+
+### Dependency Management
+
+This project uses [Renovate](https://renovatebot.com/) for automated dependency updates:
 
 ## Security Considerations
 
@@ -169,7 +206,3 @@ docker-compose restart telegram-bot
 # Check container status
 docker-compose ps
 ```
-
-## License
-
-This project is open source. Feel free to use, modify, and distribute according to your needs.
