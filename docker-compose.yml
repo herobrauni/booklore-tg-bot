@@ -1,0 +1,34 @@
+services:
+  telegram-bot:
+    build: .
+    container_name: booklore-tg-bot
+    restart: unless-stopped
+    environment:
+      # Required: Get this from @BotFather on Telegram
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+
+      # Required: Comma-separated list of Telegram user IDs who can use the bot
+      # Example: 123456789,987654321
+      - ALLOWED_USER_IDS=${ALLOWED_USER_IDS}
+
+      # Optional: Download folder path (default: /app/downloads)
+      - DOWNLOAD_FOLDER=${DOWNLOAD_FOLDER:-/app/downloads}
+
+      # Optional: Allowed file extensions (comma-separated)
+      # Example: .pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.zip,.rar
+      - ALLOWED_FILE_TYPES=${ALLOWED_FILE_TYPES:-.pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.zip,.rar}
+
+      # Optional: Maximum file size in MB (default: 20)
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-20}
+
+    volumes:
+      # Mount downloads folder to host machine for persistent storage
+      - /opt/booklore/bookdrop:/app/downloads
+
+    # Optional: Add health check
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "bot"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
