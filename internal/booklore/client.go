@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -71,6 +72,49 @@ func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64, libraryID,
 		return nil, NewAPIError(ErrInvalidToken, "Booklore API client is not configured", 0)
 	}
 
+	// Try different approaches to send file IDs
+	// Approach 1: JSON body with fileIds field (current approach)
+	result1, err1 := c.finalizeImportWithJSON(ctx, fileIDs, libraryID, pathID, "fileIds")
+
+	// If first approach succeeds, return result
+	if err1 == nil && result1 != nil && (result1.ImportedCount > 0 || result1.FailedCount > 0 || result1.Success) {
+		c.logger.Info("JSON with 'fileIds' approach succeeded")
+		return result1, nil
+	}
+
+	c.logger.Info("JSON with 'fileIds' approach failed, trying alternative field names")
+
+	// Approach 1b: Try different field name
+	result1b, err1b := c.finalizeImportWithJSON(ctx, fileIDs, libraryID, pathID, "ids")
+	if err1b == nil && result1b != nil && (result1b.ImportedCount > 0 || result1b.FailedCount > 0 || result1b.Success) {
+		c.logger.Info("JSON with 'ids' approach succeeded")
+		return result1b, nil
+	}
+
+	c.logger.Info("Alternative JSON approach failed, trying query parameter approach")
+
+	// Approach 2: Query parameters with file IDs
+	result2, err2 := c.finalizeImportWithQueryParams(ctx, fileIDs, libraryID, pathID)
+	if err2 == nil && result2 != nil {
+		c.logger.Info("Query parameter approach succeeded")
+		return result2, nil
+	}
+
+	// Approach 3: Try with no body at all (maybe the API expects only query params and library/path context)
+	result3, err3 := c.finalizeImportWithNoBody(ctx, fileIDs, libraryID, pathID)
+	if err3 == nil && result3 != nil {
+		c.logger.Info("No body approach succeeded")
+		return result3, nil
+	}
+
+	// If all approaches failed, return the error from the first approach
+	c.logger.Error("All approaches failed",
+		zap.Error(err1), zap.Error(err1b), zap.Error(err2), zap.Error(err3))
+	return nil, err1
+}
+
+// finalizeImportWithJSON sends file IDs in JSON body
+func (c *Client) finalizeImportWithJSON(ctx context.Context, fileIDs []int64, libraryID, pathID, fieldName string) (*BookdropFinalizeResult, error) {
 	// Add query parameters for library and path
 	var url string
 	if libraryID != "" {
@@ -83,23 +127,21 @@ func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64, libraryID,
 		url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize", c.baseURL)
 	}
 
-	// Log the request details
-	c.logger.Info("FinalizeImport request",
+	c.logger.Info("Trying JSON approach",
 		zap.String("url", url),
 		zap.Int("file_ids_count", len(fileIDs)),
 		zap.Any("file_ids", fileIDs))
 
-	request := BookdropFinalizeRequest{
-		FileIDs: fileIDs,
-	}
-
-	jsonData, err := json.Marshal(request)
+	// Create JSON with dynamic field name
+	jsonData, err := json.Marshal(map[string]interface{}{
+		fieldName: fileIDs,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Log the JSON payload
-	c.logger.Info("FinalizeImport JSON payload",
+	c.logger.Info("JSON payload",
+		zap.String("field_name", fieldName),
 		zap.String("json", string(jsonData)))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
@@ -125,9 +167,152 @@ func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64, libraryID,
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	c.logger.Info("Bookdrop import finalized",
+	c.logger.Info("JSON approach result",
 		zap.Int("imported_count", result.ImportedCount),
-		zap.Int("failed_count", result.FailedCount))
+		zap.Int("failed_count", result.FailedCount),
+		zap.Bool("success", result.Success))
+
+	return &result, nil
+}
+
+// finalizeImportWithQueryParams sends file IDs as query parameters
+func (c *Client) finalizeImportWithQueryParams(ctx context.Context, fileIDs []int64, libraryID, pathID string) (*BookdropFinalizeResult, error) {
+	// Build URL with all parameters including file IDs
+	var urlBuilder strings.Builder
+	urlBuilder.WriteString(fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize", c.baseURL))
+
+	// Add first parameter
+	paramsAdded := false
+
+	if len(fileIDs) > 0 {
+		urlBuilder.WriteString("?fileIds=")
+		for i, id := range fileIDs {
+			if i > 0 {
+				urlBuilder.WriteString(",")
+			}
+			urlBuilder.WriteString(fmt.Sprintf("%d", id))
+		}
+		paramsAdded = true
+	}
+
+	if libraryID != "" {
+		if paramsAdded {
+			urlBuilder.WriteString("&defaultLibraryId=")
+		} else {
+			urlBuilder.WriteString("?defaultLibraryId=")
+			paramsAdded = true
+		}
+		urlBuilder.WriteString(libraryID)
+	}
+
+	if pathID != "" {
+		if paramsAdded {
+			urlBuilder.WriteString("&defaultPathId=")
+		} else {
+			urlBuilder.WriteString("?defaultPathId=")
+		}
+		urlBuilder.WriteString(pathID)
+	}
+
+	url := urlBuilder.String()
+
+	c.logger.Info("Trying query parameter approach",
+		zap.String("url", url),
+		zap.Int("file_ids_count", len(fileIDs)),
+		zap.Any("file_ids", fileIDs))
+
+	// Send empty JSON body
+	emptyData := []byte("{}")
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(emptyData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuthHeader(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, NewNetworkError(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.handleAPIError(resp)
+	}
+
+	var result BookdropFinalizeResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	c.logger.Info("Query parameter approach result",
+		zap.Int("imported_count", result.ImportedCount),
+		zap.Int("failed_count", result.FailedCount),
+		zap.Bool("success", result.Success))
+
+	return &result, nil
+}
+
+// finalizeImportWithNoBody sends only query parameters (maybe the API uses context)
+func (c *Client) finalizeImportWithNoBody(ctx context.Context, fileIDs []int64, libraryID, pathID string) (*BookdropFinalizeResult, error) {
+	// Build URL with just library and path parameters (no file IDs)
+	var urlBuilder strings.Builder
+	urlBuilder.WriteString(fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize", c.baseURL))
+
+	// Add first parameter
+	paramsAdded := false
+
+	if libraryID != "" {
+		urlBuilder.WriteString("?defaultLibraryId=")
+		urlBuilder.WriteString(libraryID)
+		paramsAdded = true
+	}
+
+	if pathID != "" {
+		if paramsAdded {
+			urlBuilder.WriteString("&defaultPathId=")
+		} else {
+			urlBuilder.WriteString("?defaultPathId=")
+		}
+		urlBuilder.WriteString(pathID)
+	}
+
+	url := urlBuilder.String()
+
+	c.logger.Info("Trying no-body approach",
+		zap.String("url", url),
+		zap.Int("file_ids_count", len(fileIDs)),
+		zap.Any("file_ids", fileIDs))
+
+	// Send no body
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuthHeader(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, NewNetworkError(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.handleAPIError(resp)
+	}
+
+	var result BookdropFinalizeResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	c.logger.Info("No-body approach result",
+		zap.Int("imported_count", result.ImportedCount),
+		zap.Int("failed_count", result.FailedCount),
+		zap.Bool("success", result.Success))
 
 	return &result, nil
 }
