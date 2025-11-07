@@ -21,6 +21,12 @@ services:
       # Optional: Maximum file size in MB (default: 20)
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-20}
 
+      # Optional: Booklore API Integration
+      # Required for automatic book import to Booklore library
+      - BOOKLORE_API_URL=${BOOKLORE_API_URL:-https://booklore.brauni.dev}
+      - BOOKLORE_API_TOKEN=${BOOKLORE_API_TOKEN}
+      - BOOKLORE_AUTO_IMPORT=${BOOKLORE_AUTO_IMPORT:-true}
+
     volumes:
       # Mount downloads folder to host machine for persistent storage
       - /opt/booklore/bookdrop:/app/downloads

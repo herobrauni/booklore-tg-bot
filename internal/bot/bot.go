@@ -72,6 +72,9 @@ func (b *Bot) Start() error {
 		if update.Message != nil {
 			b.handleMessage(update.Message)
 		}
+		if update.CallbackQuery != nil {
+			b.handleImportCallback(update.CallbackQuery)
+		}
 	}
 
 	return nil

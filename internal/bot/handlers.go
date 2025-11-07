@@ -254,6 +254,21 @@ func (b *Bot) handleTextMessage(message *tgbotapi.Message) {
 		return
 	}
 
+	if text == "/bookdrop" {
+		b.handleBookdropCommand(message.Chat.ID)
+		return
+	}
+
+	if text == "/rescan" {
+		b.handleRescanCommand(message.Chat.ID)
+		return
+	}
+
+	if text == "/import" {
+		b.handleImportCommand(message.Chat.ID)
+		return
+	}
+
 	// Default text response
 	msg := tgbotapi.NewMessage(message.Chat.ID,
 		"👋 Send me a file and I'll download it for you!\n\nUse /help for more information.")
@@ -353,7 +368,16 @@ I can download files you send me and save them to my storage.`
 
 *Commands:*
 /start or /help - Show this help message
-/status - Show bot status and settings
+/status - Show bot status and settings`
+
+	if b.booklore.IsEnabled() {
+		helpText += `
+/bookdrop - List all files in bookdrop
+/rescan - Scan bookdrop for new files
+/import - Select files for import to library`
+	}
+
+	helpText += `
 
 *Allowed file types:* ` + fmt.Sprintf("%v", b.config.AllowedFileTypes) + `
 
@@ -406,6 +430,182 @@ func (b *Bot) sendStatusMessage(chatID int64) {
 	b.api.Send(msg)
 }
 
+func (b *Bot) handleBookdropCommand(chatID int64) {
+	if !b.booklore.IsEnabled() {
+		msg := tgbotapi.NewMessage(chatID, "❌ Booklore integration is not enabled. Please configure the API token.")
+		b.api.Send(msg)
+		return
+	}
+
+	// Send typing indicator to show we're working
+	action := tgbotapi.NewChatAction(chatID, "typing")
+	b.api.Send(action)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get all files from bookdrop
+	files, err := b.booklore.GetBookdropFiles(ctx, "", 0, 50) // Get up to 50 files
+	if err != nil {
+		b.config.Logger.Error("Failed to get bookdrop files",
+			zap.Error(err))
+		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to retrieve bookdrop files: %s", err.Error()))
+		b.api.Send(msg)
+		return
+	}
+
+	if files.TotalElements == 0 {
+		msg := tgbotapi.NewMessage(chatID, "📂 Bookdrop is empty. No files found.")
+		b.api.Send(msg)
+		return
+	}
+
+	// Format and send the bookdrop contents
+	message := fmt.Sprintf("📂 *Bookdrop Contents*\n\nFound %d files:\n\n", files.TotalElements)
+
+	for i, file := range files.Content {
+		status := "⏳ " + file.Status
+		if file.Status == "NEW" {
+			status = "🆕 " + file.Status
+		} else if file.Status == "IMPORTED" {
+			status = "✅ " + file.Status
+		} else if file.Status == "FAILED" {
+			status = "❌ " + file.Status
+		}
+
+		message += fmt.Sprintf("%d. %s\n   📄 %s\n   📏 %d KB\n   📅 %s\n\n",
+			i+1, status, file.FileName, file.FileSize/1024, file.DateAdded)
+
+		// Split long messages to avoid Telegram limits
+		if len(message) > 3500 {
+			msg := tgbotapi.NewMessage(chatID, message)
+			msg.ParseMode = "Markdown"
+			b.api.Send(msg)
+			message = ""
+		}
+	}
+
+	if message != "" {
+		msg := tgbotapi.NewMessage(chatID, message)
+		msg.ParseMode = "Markdown"
+		b.api.Send(msg)
+	}
+
+	// Add suggestion for import
+	if files.TotalElements > 0 {
+		hint := tgbotapi.NewMessage(chatID,
+			"💡 Use /rescan to refresh the bookdrop or /import to select files for import.")
+		b.api.Send(hint)
+	}
+}
+
+func (b *Bot) handleRescanCommand(chatID int64) {
+	if !b.booklore.IsEnabled() {
+		msg := tgbotapi.NewMessage(chatID, "❌ Booklore integration is not enabled. Please configure the API token.")
+		b.api.Send(msg)
+		return
+	}
+
+	// Send typing indicator
+	action := tgbotapi.NewChatAction(chatID, "typing")
+	b.api.Send(action)
+
+	msg := tgbotapi.NewMessage(chatID, "🔄 Scanning bookdrop folder for new files...")
+	b.api.Send(msg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := b.booklore.RescanBookdrop(ctx); err != nil {
+		b.config.Logger.Error("Failed to rescan bookdrop",
+			zap.Error(err))
+		errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to scan bookdrop: %s", err.Error()))
+		b.api.Send(errorMsg)
+		return
+	}
+
+	successMsg := tgbotapi.NewMessage(chatID, "✅ Bookdrop folder scanned successfully!\n\n💡 Use /bookdrop to see the updated contents.")
+	b.api.Send(successMsg)
+}
+
+func (b *Bot) handleImportCommand(chatID int64) {
+	if !b.booklore.IsEnabled() {
+		msg := tgbotapi.NewMessage(chatID, "❌ Booklore integration is not enabled. Please configure the API token.")
+		b.api.Send(msg)
+		return
+	}
+
+	// Send typing indicator
+	action := tgbotapi.NewChatAction(chatID, "typing")
+	b.api.Send(action)
+
+	msg := tgbotapi.NewMessage(chatID, "🔄 Preparing import options...")
+	b.api.Send(msg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get only NEW files for import
+	files, err := b.booklore.GetBookdropFiles(ctx, "NEW", 0, 20) // Get up to 20 new files
+	if err != nil {
+		b.config.Logger.Error("Failed to get bookdrop files for import",
+			zap.Error(err))
+		errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to retrieve files for import: %s", err.Error()))
+		b.api.Send(errorMsg)
+		return
+	}
+
+	if files.TotalElements == 0 {
+		msg := tgbotapi.NewMessage(chatID, "📂 No new files found in bookdrop for import.\n\n💡 Use /rescan to check for new files, or /bookdrop to see all files.")
+		b.api.Send(msg)
+		return
+	}
+
+	// Create inline keyboard for file selection
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	for i, file := range files.Content {
+		if i >= 10 { // Limit to 10 files to keep message manageable
+			break
+		}
+
+		buttonText := fmt.Sprintf("📄 %s (%.1f MB)",
+			truncateString(file.FileName, 40),
+			float64(file.FileSize)/1024/1024)
+
+		callbackData := fmt.Sprintf("import_%d", file.ID)
+
+		keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{
+			{Text: buttonText, CallbackData: &callbackData},
+		})
+	}
+
+	// Add "Import All" and "Cancel" buttons
+	if files.TotalElements > 1 {
+		importAllBtn := tgbotapi.InlineKeyboardButton{
+			Text:         "📥 Import All",
+			CallbackData: &[]string{"import_all"}[0],
+		}
+		keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{importAllBtn})
+	}
+
+	cancelBtn := tgbotapi.InlineKeyboardButton{
+		Text:         "❌ Cancel",
+		CallbackData: &[]string{"import_cancel"}[0],
+	}
+	keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{cancelBtn})
+
+	replyMarkup := tgbotapi.NewInlineKeyboardMarkup(keyboard...)
+
+	message := fmt.Sprintf("📥 *Select files to import*\n\nFound %d new files:\n\n💡 Choose files below or use 📥 Import All for all new files.",
+		files.TotalElements)
+
+	telegramMsg := tgbotapi.NewMessage(chatID, message)
+	telegramMsg.ParseMode = "Markdown"
+	telegramMsg.ReplyMarkup = replyMarkup
+	b.api.Send(telegramMsg)
+}
+
 // triggerBookloreImport triggers the Booklore import process after a file download
 func (b *Bot) triggerBookloreImport(chatID int64, filename string) string {
 	if !b.booklore.IsEnabled() || !b.config.BookloreAPI.AutoImport {
@@ -416,7 +616,7 @@ func (b *Bot) triggerBookloreImport(chatID int64, filename string) string {
 		zap.String("filename", filename))
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// First rescan the bookdrop folder
@@ -427,25 +627,53 @@ func (b *Bot) triggerBookloreImport(chatID int64, filename string) string {
 		return fmt.Sprintf("📥 File downloaded, but failed to trigger Booklore scan: %s", err.Error())
 	}
 
-	// Then finalize all imports
-	result, err := b.booklore.FinalizeAllImports(ctx)
-	if err != nil {
-		b.config.Logger.Error("Failed to finalize Booklore import",
+	// Wait a moment for Booklore to process the file, then retry import
+	maxRetries := 3
+	retryDelay := 3 * time.Second
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			b.config.Logger.Info("Waiting before retry",
+				zap.String("filename", filename),
+				zap.Int("attempt", attempt+1),
+				zap.Duration("delay", retryDelay))
+
+			select {
+			case <-ctx.Done():
+				return "📥 File downloaded, but Booklore import timed out"
+			case <-time.After(retryDelay):
+			}
+		}
+
+		// Finalize all imports
+		result, err := b.booklore.FinalizeAllImports(ctx)
+		if err != nil {
+			b.config.Logger.Error("Failed to finalize Booklore import",
+				zap.String("filename", filename),
+				zap.Error(err))
+			return fmt.Sprintf("📥 File downloaded, but failed to complete Booklore import: %s", err.Error())
+		}
+
+		if result.ImportedCount > 0 {
+			b.config.Logger.Info("Booklore import completed successfully",
+				zap.String("filename", filename),
+				zap.Int("imported_count", result.ImportedCount),
+				zap.Int("attempt", attempt+1))
+			return fmt.Sprintf("📚 File downloaded and imported to Booklore successfully! (%d books imported)", result.ImportedCount)
+		}
+
+		// If no files were imported on this attempt, try again
+		b.config.Logger.Info("No files imported on this attempt, retrying",
 			zap.String("filename", filename),
-			zap.Error(err))
-		return fmt.Sprintf("📥 File downloaded, but failed to complete Booklore import: %s", err.Error())
+			zap.Int("attempt", attempt+1),
+			zap.Int("remaining_attempts", maxRetries-attempt-1))
 	}
 
-	if result.ImportedCount > 0 {
-		b.config.Logger.Info("Booklore import completed successfully",
-			zap.String("filename", filename),
-			zap.Int("imported_count", result.ImportedCount))
-		return fmt.Sprintf("📚 File downloaded and imported to Booklore successfully! (%d books imported)", result.ImportedCount)
-	} else if result.FailedCount > 0 {
-		return fmt.Sprintf("📥 File downloaded, but %d books failed to import to Booklore", result.FailedCount)
-	} else {
-		return "📥 File downloaded to bookdrop, but no new books were imported"
-	}
+	// All retries exhausted
+	b.config.Logger.Info("Booklore import completed after retries",
+		zap.String("filename", filename),
+		zap.Int("total_attempts", maxRetries))
+	return "📥 File downloaded to bookdrop, but no new books were imported after multiple attempts"
 }
 
 // Helper function for case-insensitive string matching
@@ -459,4 +687,121 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// Helper function to truncate strings
+func truncateString(s string, maxLength int) string {
+	if len(s) <= maxLength {
+		return s
+	}
+	if maxLength <= 3 {
+		return s[:maxLength]
+	}
+	return s[:maxLength-3] + "..."
+}
+
+// handleImportCallback handles callback queries from inline keyboards
+func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
+	if !b.booklore.IsEnabled() {
+		callbackResponse := tgbotapi.NewCallback(callback.ID, "Booklore integration is not enabled")
+		b.api.Request(callbackResponse)
+		return
+	}
+
+	data := callback.Data
+	chatID := callback.Message.Chat.ID
+
+	if data == "import_cancel" {
+		callbackResponse := tgbotapi.NewCallback(callback.ID, "Import cancelled")
+		b.api.Request(callbackResponse)
+
+		editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, "❌ Import cancelled")
+		b.api.Send(editMsg)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if data == "import_all" {
+		callbackResponse := tgbotapi.NewCallback(callback.ID, "Importing all new files...")
+		b.api.Request(callbackResponse)
+
+		// Show processing message
+		editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, "📥 Importing all new files... This may take a moment.")
+		b.api.Send(editMsg)
+
+		// Get all new files
+		files, err := b.booklore.GetBookdropFiles(ctx, "NEW", 0, 100)
+		if err != nil {
+			b.api.Request(tgbotapi.NewCallback(callback.ID, "Failed to get files"))
+			editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, fmt.Sprintf("❌ Failed to get files: %s", err.Error()))
+			b.api.Send(editMsg)
+			return
+		}
+
+		if len(files.Content) == 0 {
+			editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, "📂 No new files found to import.")
+			b.api.Send(editMsg)
+			return
+		}
+
+		// Extract file IDs
+		fileIDs := make([]int64, len(files.Content))
+		for i, file := range files.Content {
+			fileIDs[i] = file.ID
+		}
+
+		// Import all files
+		result, err := b.booklore.FinalizeImport(ctx, fileIDs)
+		if err != nil {
+			editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, fmt.Sprintf("❌ Import failed: %s", err.Error()))
+			b.api.Send(editMsg)
+			return
+		}
+
+		successMessage := fmt.Sprintf("✅ Import completed!\n\n📊 Results:\n📥 Imported: %d\n❌ Failed: %d",
+			result.ImportedCount, result.FailedCount)
+
+		editMsg = tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, successMessage)
+		b.api.Send(editMsg)
+		return
+	}
+
+	// Handle individual file import
+	if strings.HasPrefix(data, "import_") {
+		var fileID int64
+		_, err := fmt.Sscanf(data, "import_%d", &fileID)
+		if err != nil {
+			b.api.Request(tgbotapi.NewCallback(callback.ID, "Invalid file ID"))
+			return
+		}
+
+		callbackResponse := tgbotapi.NewCallback(callback.ID, "Importing selected file...")
+		b.api.Request(callbackResponse)
+
+		// Show processing message
+		editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, "📥 Importing selected file...")
+		b.api.Send(editMsg)
+
+		// Import the specific file
+		result, err := b.booklore.FinalizeImport(ctx, []int64{fileID})
+		if err != nil {
+			editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, fmt.Sprintf("❌ Import failed: %s", err.Error()))
+			b.api.Send(editMsg)
+			return
+		}
+
+		var successMessage string
+		if result.ImportedCount > 0 {
+			successMessage = "✅ File imported successfully! 📚"
+		} else if result.FailedCount > 0 {
+			successMessage = "❌ File import failed"
+		} else {
+			successMessage = "ℹ️ No files were imported"
+		}
+
+		editMsg = tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, successMessage)
+		b.api.Send(editMsg)
+	}
 }

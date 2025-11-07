@@ -21,10 +21,12 @@ type Config struct {
 }
 
 type BookloreConfig struct {
-	APIURL     string
-	APIToken   string
-	AutoImport bool
-	Enabled    bool
+	APIURL        string
+	APIToken      string
+	AutoImport    bool
+	Enabled       bool
+	RetryAttempts int
+	RetryDelay    int // in seconds
 }
 
 func Load() (*Config, error) {
@@ -133,6 +135,8 @@ func loadBookloreConfig() *BookloreConfig {
 
 	apiToken := os.Getenv("BOOKLORE_API_TOKEN")
 	autoImportStr := os.Getenv("BOOKLORE_AUTO_IMPORT")
+	retryAttemptsStr := os.Getenv("BOOKLORE_RETRY_ATTEMPTS")
+	retryDelayStr := os.Getenv("BOOKLORE_RETRY_DELAY")
 
 	// Only enable Booklore integration if API token is provided
 	enabled := apiToken != ""
@@ -143,10 +147,28 @@ func loadBookloreConfig() *BookloreConfig {
 		autoImport = strings.ToLower(autoImportStr) == "true"
 	}
 
+	// Parse retry attempts (default to 3)
+	retryAttempts := 3
+	if retryAttemptsStr != "" {
+		if attempts, err := strconv.Atoi(retryAttemptsStr); err == nil && attempts > 0 {
+			retryAttempts = attempts
+		}
+	}
+
+	// Parse retry delay (default to 3 seconds)
+	retryDelay := 3
+	if retryDelayStr != "" {
+		if delay, err := strconv.Atoi(retryDelayStr); err == nil && delay > 0 {
+			retryDelay = delay
+		}
+	}
+
 	return &BookloreConfig{
-		APIURL:     strings.TrimSuffix(apiURL, "/"),
-		APIToken:   apiToken,
-		AutoImport: autoImport,
-		Enabled:    enabled,
+		APIURL:        strings.TrimSuffix(apiURL, "/"),
+		APIToken:      apiToken,
+		AutoImport:    autoImport,
+		Enabled:       enabled,
+		RetryAttempts: retryAttempts,
+		RetryDelay:    retryDelay,
 	}
 }
