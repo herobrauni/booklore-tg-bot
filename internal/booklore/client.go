@@ -91,7 +91,16 @@ func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64, libraryID,
 		return result1b, nil
 	}
 
-	c.logger.Info("Alternative JSON approach failed, trying query parameter approach")
+	c.logger.Info("Alternative JSON approach failed, trying string array approach")
+
+	// Approach 1c: Try string array instead of int64 array
+	result1c, err1c := c.finalizeImportWithJSONStringArray(ctx, fileIDs, libraryID, pathID, "fileIds")
+	if err1c == nil && result1c != nil && (result1c.ImportedCount > 0 || result1c.FailedCount > 0 || result1c.Success) {
+		c.logger.Info("JSON string array approach succeeded")
+		return result1c, nil
+	}
+
+	c.logger.Info("String array approach failed, trying query parameter approach")
 
 	// Approach 2: Query parameters with file IDs
 	result2, err2 := c.finalizeImportWithQueryParams(ctx, fileIDs, libraryID, pathID)
@@ -100,16 +109,18 @@ func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64, libraryID,
 		return result2, nil
 	}
 
-	// Approach 3: Try with no body at all (maybe the API expects only query params and library/path context)
-	result3, err3 := c.finalizeImportWithNoBody(ctx, fileIDs, libraryID, pathID)
+	c.logger.Info("Query parameter approach failed, trying PUT method")
+
+	// Approach 3: Try PUT method instead of POST
+	result3, err3 := c.finalizeImportWithPUT(ctx, fileIDs, libraryID, pathID)
 	if err3 == nil && result3 != nil {
-		c.logger.Info("No body approach succeeded")
+		c.logger.Info("PUT method approach succeeded")
 		return result3, nil
 	}
 
 	// If all approaches failed, return the error from the first approach
 	c.logger.Error("All approaches failed",
-		zap.Error(err1), zap.Error(err1b), zap.Error(err2), zap.Error(err3))
+		zap.Error(err1), zap.Error(err1b), zap.Error(err1c), zap.Error(err2), zap.Error(err3))
 	return nil, err1
 }
 
@@ -168,6 +179,74 @@ func (c *Client) finalizeImportWithJSON(ctx context.Context, fileIDs []int64, li
 	}
 
 	c.logger.Info("JSON approach result",
+		zap.Int("imported_count", result.ImportedCount),
+		zap.Int("failed_count", result.FailedCount),
+		zap.Bool("success", result.Success))
+
+	return &result, nil
+}
+
+// finalizeImportWithJSONStringArray sends file IDs as string array in JSON body
+func (c *Client) finalizeImportWithJSONStringArray(ctx context.Context, fileIDs []int64, libraryID, pathID, fieldName string) (*BookdropFinalizeResult, error) {
+	// Add query parameters for library and path
+	var url string
+	if libraryID != "" {
+		if pathID != "" {
+			url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize?defaultLibraryId=%s&defaultPathId=%s", c.baseURL, libraryID, pathID)
+		} else {
+			url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize?defaultLibraryId=%s", c.baseURL, libraryID)
+		}
+	} else {
+		url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize", c.baseURL)
+	}
+
+	// Convert int64 array to string array
+	stringIDs := make([]string, len(fileIDs))
+	for i, id := range fileIDs {
+		stringIDs[i] = fmt.Sprintf("%d", id)
+	}
+
+	c.logger.Info("Trying JSON string array approach",
+		zap.String("url", url),
+		zap.Int("file_ids_count", len(fileIDs)),
+		zap.Strings("string_ids", stringIDs))
+
+	// Create JSON with string array
+	jsonData, err := json.Marshal(map[string]interface{}{
+		fieldName: stringIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	c.logger.Info("JSON string array payload",
+		zap.String("field_name", fieldName),
+		zap.String("json", string(jsonData)))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuthHeader(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, NewNetworkError(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.handleAPIError(resp)
+	}
+
+	var result BookdropFinalizeResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	c.logger.Info("JSON string array approach result",
 		zap.Int("imported_count", result.ImportedCount),
 		zap.Int("failed_count", result.FailedCount),
 		zap.Bool("success", result.Success))
@@ -310,6 +389,69 @@ func (c *Client) finalizeImportWithNoBody(ctx context.Context, fileIDs []int64, 
 	}
 
 	c.logger.Info("No-body approach result",
+		zap.Int("imported_count", result.ImportedCount),
+		zap.Int("failed_count", result.FailedCount),
+		zap.Bool("success", result.Success))
+
+	return &result, nil
+}
+
+// finalizeImportWithPUT tries using PUT method instead of POST
+func (c *Client) finalizeImportWithPUT(ctx context.Context, fileIDs []int64, libraryID, pathID string) (*BookdropFinalizeResult, error) {
+	// Build URL with library and path parameters
+	var url string
+	if libraryID != "" {
+		if pathID != "" {
+			url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize?defaultLibraryId=%s&defaultPathId=%s", c.baseURL, libraryID, pathID)
+		} else {
+			url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize?defaultLibraryId=%s", c.baseURL, libraryID)
+		}
+	} else {
+		url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize", c.baseURL)
+	}
+
+	c.logger.Info("Trying PUT method approach",
+		zap.String("url", url),
+		zap.Int("file_ids_count", len(fileIDs)),
+		zap.Any("file_ids", fileIDs))
+
+	// Create JSON payload
+	jsonData, err := json.Marshal(map[string]interface{}{
+		"fileIds": fileIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	c.logger.Info("PUT method payload",
+		zap.String("json", string(jsonData)))
+
+	// Use PUT instead of POST
+	req, err := http.NewRequestWithContext(ctx, "PUT", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuthHeader(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, NewNetworkError(err)
+	}
+	defer resp.Body.Close()
+
+	// PUT might return 201 Created instead of 200 OK
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, c.handleAPIError(resp)
+	}
+
+	var result BookdropFinalizeResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	c.logger.Info("PUT method approach result",
 		zap.Int("imported_count", result.ImportedCount),
 		zap.Int("failed_count", result.FailedCount),
 		zap.Bool("success", result.Success))

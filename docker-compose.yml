@@ -3,6 +3,7 @@ services:
     build: .
     container_name: booklore-tg-bot
     restart: unless-stopped
+    user: "1000:1000"  # Run as non-root user with proper permissions
     environment:
       # Required: Get this from @BotFather on Telegram
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
