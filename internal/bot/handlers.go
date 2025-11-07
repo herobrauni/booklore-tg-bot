@@ -1241,13 +1241,27 @@ func (b *Bot) getLibraryDetails(libraryID int64) (*booklore.Library, error) {
 func (b *Bot) getLibraryIDsForUser(userID int64) (string, string) {
 	pref := b.preferences.GetUserPreference(userID)
 
+	b.config.Logger.Info("Getting library IDs for user",
+		zap.Int64("user_id", userID),
+		zap.Bool("has_library", pref.HasLibrary()),
+		zap.Int64("pref_library_id", pref.GetLibraryID()),
+		zap.Int64("pref_path_id", pref.GetPathID()),
+		zap.String("config_library_id", b.config.BookloreAPI.DefaultLibraryID),
+		zap.String("config_path_id", b.config.BookloreAPI.DefaultPathID))
+
 	if pref.HasLibrary() {
 		libraryID := fmt.Sprintf("%d", pref.GetLibraryID())
 		pathID := fmt.Sprintf("%d", pref.GetPathID())
+		b.config.Logger.Info("Using user preferences",
+			zap.String("library_id", libraryID),
+			zap.String("path_id", pathID))
 		return libraryID, pathID
 	}
 
 	// Fallback to config defaults
+	b.config.Logger.Info("Using config defaults",
+		zap.String("library_id", b.config.BookloreAPI.DefaultLibraryID),
+		zap.String("path_id", b.config.BookloreAPI.DefaultPathID))
 	return b.config.BookloreAPI.DefaultLibraryID, b.config.BookloreAPI.DefaultPathID
 }
 
