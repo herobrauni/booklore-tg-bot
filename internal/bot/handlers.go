@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brauni/booklore-tg-bot/internal/booklore"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"go.uber.org/zap"
 )
@@ -269,6 +270,11 @@ func (b *Bot) handleTextMessage(message *tgbotapi.Message) {
 		return
 	}
 
+	if text == "/debug_bookdrop" {
+		b.handleDebugBookdropCommand(message.Chat.ID)
+		return
+	}
+
 	// Default text response
 	msg := tgbotapi.NewMessage(message.Chat.ID,
 		"👋 Send me a file and I'll download it for you!\n\nUse /help for more information.")
@@ -375,6 +381,8 @@ I can download files you send me and save them to my storage.`
 /bookdrop - List all files in bookdrop
 /rescan - Scan bookdrop for new files
 /import - Select files for import to library`
+		// Debug command - not shown in help but available
+		// /debug_bookdrop - Test different API endpoints
 	}
 
 	helpText += `
@@ -444,15 +452,23 @@ func (b *Bot) handleBookdropCommand(chatID int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Get all files from bookdrop
-	files, err := b.booklore.GetBookdropFiles(ctx, "", 0, 50) // Get up to 50 files
+	// Get all files from bookdrop (no status filter)
+	b.config.Logger.Info("Fetching bookdrop files",
+		zap.String("api_url", b.config.BookloreAPI.APIURL))
+
+	files, err := b.booklore.GetBookdropFilesNoStatus(ctx, 0, 50) // Get up to 50 files
 	if err != nil {
 		b.config.Logger.Error("Failed to get bookdrop files",
-			zap.Error(err))
+			zap.Error(err),
+			zap.String("api_url", b.config.BookloreAPI.APIURL))
 		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to retrieve bookdrop files: %s", err.Error()))
 		b.api.Send(msg)
 		return
 	}
+
+	b.config.Logger.Info("Bookdrop files retrieved",
+		zap.Int("total_files", files.TotalElements),
+		zap.Int("files_in_content", len(files.Content)))
 
 	if files.TotalElements == 0 {
 		msg := tgbotapi.NewMessage(chatID, "📂 Bookdrop is empty. No files found.")
@@ -604,6 +620,70 @@ func (b *Bot) handleImportCommand(chatID int64) {
 	telegramMsg.ParseMode = "Markdown"
 	telegramMsg.ReplyMarkup = replyMarkup
 	b.api.Send(telegramMsg)
+}
+
+func (b *Bot) handleDebugBookdropCommand(chatID int64) {
+	if !b.booklore.IsEnabled() {
+		msg := tgbotapi.NewMessage(chatID, "❌ Booklore integration is not enabled.")
+		b.api.Send(msg)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	debugMsg := "🔍 *Bookdrop Debug Information*\n\n"
+
+	// Test different API endpoints
+	testCases := []struct {
+		name   string
+		status string
+	}{
+		{"No status filter", ""},
+		{"NEW status", "NEW"},
+		{"PROCESSED status", "PROCESSED"},
+		{"IMPORTED status", "IMPORTED"},
+		{"FAILED status", "FAILED"},
+	}
+
+	for _, tc := range testCases {
+		debugMsg += fmt.Sprintf("📋 Testing: %s\n", tc.name)
+
+		var err error
+		var result *booklore.PageBookdropFile
+
+		if tc.status == "" {
+			result, err = b.booklore.GetBookdropFilesNoStatus(ctx, 0, 10)
+		} else {
+			result, err = b.booklore.GetBookdropFiles(ctx, tc.status, 0, 10)
+		}
+
+		if err != nil {
+			debugMsg += fmt.Sprintf("   ❌ Error: %s\n\n", err.Error())
+		} else {
+			debugMsg += fmt.Sprintf("   ✅ Success: %d total files, %d in response\n\n",
+				result.TotalElements, len(result.Content))
+		}
+	}
+
+	// Also test the notification endpoint
+	debugMsg += "📊 Testing notification endpoint...\n"
+	notification, err := b.booklore.GetBookdropNotification(ctx)
+	if err != nil {
+		debugMsg += fmt.Sprintf("   ❌ Error: %s\n", err.Error())
+	} else {
+		debugMsg += fmt.Sprintf("   ✅ Success: Total: %d, New: %d, Imported: %d\n",
+			notification.TotalFiles, notification.NewFiles, notification.ImportedFiles)
+	}
+
+	// Truncate if too long for Telegram
+	if len(debugMsg) > 4000 {
+		debugMsg = debugMsg[:3950] + "\n... (truncated)"
+	}
+
+	msg := tgbotapi.NewMessage(chatID, debugMsg)
+	msg.ParseMode = "Markdown"
+	b.api.Send(msg)
 }
 
 // triggerBookloreImport triggers the Booklore import process after a file download

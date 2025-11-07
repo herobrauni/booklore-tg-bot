@@ -177,6 +177,54 @@ func (c *Client) GetBookdropFiles(ctx context.Context, status string, page, size
 	return &result, nil
 }
 
+// GetBookdropFilesNoStatus retrieves all bookdrop files without status filter
+func (c *Client) GetBookdropFilesNoStatus(ctx context.Context, page, size int) (*PageBookdropFile, error) {
+	if !c.IsEnabled() {
+		return nil, NewAPIError(ErrInvalidToken, "Booklore API client is not configured", 0)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/bookdrop/files?page=%d&size=%d",
+		c.baseURL, page, size)
+
+	c.logger.Info("Calling Booklore API for all files",
+		zap.String("url", url),
+		zap.Int("page", page),
+		zap.Int("size", size))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	c.setAuthHeader(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, NewNetworkError(err)
+	}
+	defer resp.Body.Close()
+
+	c.logger.Info("Booklore API response",
+		zap.String("url", url),
+		zap.Int("status_code", resp.StatusCode))
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.handleAPIError(resp)
+	}
+
+	var result PageBookdropFile
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	c.logger.Info("Bookdrop files decoded successfully",
+		zap.String("url", url),
+		zap.Int("total_elements", result.TotalElements),
+		zap.Int("content_length", len(result.Content)))
+
+	return &result, nil
+}
+
 // GetBookdropNotification gets bookdrop notification summary
 func (c *Client) GetBookdropNotification(ctx context.Context) (*BookdropNotification, error) {
 	if !c.IsEnabled() {
