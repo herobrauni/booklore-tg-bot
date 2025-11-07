@@ -584,29 +584,29 @@ func (b *Bot) handleImportCommand(chatID int64, userID int64) {
 	}
 
 	// Check if user has library configured
-	libraryID, pathID := b.getLibraryIDsForUser(userID)
+	pref := b.preferences.GetUserPreference(userID)
+	if !pref.HasLibrary() {
+		// User has no library configured, force them to set one
+		message := `📚 *Library Configuration Required*
 
-	if libraryID == "" || pathID == "" {
-		// User has no library configured, offer to help them set one
-		message := `📚 *No Library Configured*
+You must select a library and path before importing books.
 
-You haven't selected a library for imports yet. Would you like to choose one now?
+📖 *Why this is required:*
+• Booklore needs to know where to store your books
+• Each library has specific organization rules
+• Prevents books from being imported to wrong location
 
-📖 *Why you need a library:*
-• Tells Booklore where to import your books
-• Organizes imports by library and path
-• Ensures proper file handling
+🔧 *Setup required:*
+Use /set_library to configure your preferred library and path.
 
-*Options:*
-⚙️ **Set Library** - Choose your preferred library
-📋 **Continue Anyway** - Use system default (may not work)`
+*After setup:*
+• Your books will import to the correct location
+• Your preference is saved automatically
+• Future imports will work seamlessly`
 
 		keyboard := [][]tgbotapi.InlineKeyboardButton{
 			{
-				{Text: "⚙️ Set Library", CallbackData: &[]string{"prompt_set_library"}[0]},
-			},
-			{
-				{Text: "📋 Continue Anyway", CallbackData: &[]string{"import_continue_anyway"}[0]},
+				{Text: "⚙️ Configure Library Now", CallbackData: &[]string{"prompt_set_library"}[0]},
 			},
 			{
 				{Text: "❌ Cancel", CallbackData: &[]string{"import_cancel_prompt"}[0]},
@@ -1054,6 +1054,14 @@ func (b *Bot) triggerBookloreImport(chatID int64, userID int64, filename string)
 	// Get library IDs for user
 	libraryID, pathID := b.getLibraryIDsForUser(userID)
 
+	// If user has no library configured, don't attempt auto-import
+	if libraryID == "" || pathID == "" {
+		b.config.Logger.Info("Skipping auto-import - user has no library configured",
+			zap.Int64("user_id", userID),
+			zap.String("filename", filename))
+		return ""
+	}
+
 	// Wait a moment for Booklore to process the file, then retry import
 	maxRetries := 3
 	retryDelay := 3 * time.Second
@@ -1281,17 +1289,7 @@ func (b *Bot) handleLibraryPromptCallback(callback *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	if data == "import_continue_anyway" {
-		callbackResponse := tgbotapi.NewCallback(callback.ID, "Continuing with import...")
-		b.api.Request(callbackResponse)
-
-		editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, "📋 Continuing with system defaults...")
-		b.api.Send(editMsg)
-
-		// Continue with import using system defaults (bypass library check)
-		b.handleImportCommandWithDefaults(chatID, userID)
-		return
-	}
+	// "import_continue_anyway" option has been removed - users must configure library
 
 	if data == "import_cancel_prompt" {
 		callbackResponse := tgbotapi.NewCallback(callback.ID, "Import cancelled")
@@ -1303,102 +1301,7 @@ func (b *Bot) handleLibraryPromptCallback(callback *tgbotapi.CallbackQuery) {
 	}
 }
 
-// handleImportCommandWithDefaults handles import when user chooses to continue without library config
-func (b *Bot) handleImportCommandWithDefaults(chatID int64, userID int64) {
-	// Send typing indicator
-	action := tgbotapi.NewChatAction(chatID, "typing")
-	b.api.Send(action)
-
-	msg := tgbotapi.NewMessage(chatID, "🔄 Preparing import options...")
-	b.api.Send(msg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Get all files for import
-	files, err := b.booklore.GetBookdropFilesNoStatus(ctx, 0, 20)
-	if err != nil {
-		b.config.Logger.Error("Failed to get bookdrop files for import",
-			zap.Error(err))
-		errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to retrieve files for import: %s", err.Error()))
-		b.api.Send(errorMsg)
-		return
-	}
-
-	if files.TotalElements == 0 {
-		msg := tgbotapi.NewMessage(chatID, "📂 No files found in bookdrop for import.\n\n💡 Use /rescan to check for new files, or /bookdrop to see all files.")
-		b.api.Send(msg)
-		return
-	}
-
-	// Create inline keyboard for file selection
-	var keyboard [][]tgbotapi.InlineKeyboardButton
-
-	for i, file := range files.Content {
-		if i >= 10 { // Limit to 10 files
-			break
-		}
-
-		statusEmoji := ""
-		switch file.Status {
-		case "NEW":
-			statusEmoji = "🆕"
-		case "PENDING_REVIEW":
-			statusEmoji = "⏳"
-		case "PROCESSED":
-			statusEmoji = "🔍"
-		case "IMPORTED":
-			statusEmoji = "✅"
-		case "FAILED":
-			statusEmoji = "❌"
-		default:
-			statusEmoji = "📄"
-		}
-
-		buttonText := fmt.Sprintf("%s %s (%.1f MB)",
-			statusEmoji,
-			truncateString(file.FileName, 40),
-			float64(file.FileSize)/1024/1024)
-
-		callbackData := fmt.Sprintf("import_%d", file.ID)
-
-		keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{
-			{Text: buttonText, CallbackData: &callbackData},
-		})
-	}
-
-	// Add import all button
-	if files.TotalElements >= 1 {
-		var importAllBtnText string
-		if files.TotalElements == 1 {
-			importAllBtnText = "📥 Import Book"
-		} else {
-			importAllBtnText = "📥 Import All"
-		}
-
-		importAllBtn := tgbotapi.InlineKeyboardButton{
-			Text:         importAllBtnText,
-			CallbackData: &[]string{"import_all"}[0],
-		}
-		keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{importAllBtn})
-	}
-
-	cancelBtn := tgbotapi.InlineKeyboardButton{
-		Text:         "❌ Cancel",
-		CallbackData: &[]string{"import_cancel"}[0],
-	}
-	keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{cancelBtn})
-
-	replyMarkup := tgbotapi.NewInlineKeyboardMarkup(keyboard...)
-
-	message := fmt.Sprintf("📥 *Select files to import*\n\nFound %d files:\n\n⚠️ *Using system defaults - may not work properly*\n💡 Configure your library with /set_library for better results.",
-		files.TotalElements)
-
-	telegramMsg := tgbotapi.NewMessage(chatID, message)
-	telegramMsg.ParseMode = "Markdown"
-	telegramMsg.ReplyMarkup = replyMarkup
-	b.api.Send(telegramMsg)
-}
+// handleImportCommandWithDefaults has been removed - users must configure library
 
 // getLibraryDetails fetches library details including paths
 func (b *Bot) getLibraryDetails(libraryID int64) (*booklore.Library, error) {
@@ -1419,7 +1322,7 @@ func (b *Bot) getLibraryDetails(libraryID int64) (*booklore.Library, error) {
 	return nil, fmt.Errorf("library with ID %d not found", libraryID)
 }
 
-// getLibraryIDsForUser gets library and path IDs for a user, falling back to config defaults
+// getLibraryIDsForUser gets library and path IDs for a user (user MUST have configured library)
 func (b *Bot) getLibraryIDsForUser(userID int64) (string, string) {
 	pref := b.preferences.GetUserPreference(userID)
 
@@ -1427,9 +1330,7 @@ func (b *Bot) getLibraryIDsForUser(userID int64) (string, string) {
 		zap.Int64("user_id", userID),
 		zap.Bool("has_library", pref.HasLibrary()),
 		zap.Int64("pref_library_id", pref.GetLibraryID()),
-		zap.Int64("pref_path_id", pref.GetPathID()),
-		zap.String("config_library_id", b.config.BookloreAPI.DefaultLibraryID),
-		zap.String("config_path_id", b.config.BookloreAPI.DefaultPathID))
+		zap.Int64("pref_path_id", pref.GetPathID()))
 
 	if pref.HasLibrary() {
 		libraryID := fmt.Sprintf("%d", pref.GetLibraryID())
@@ -1440,11 +1341,9 @@ func (b *Bot) getLibraryIDsForUser(userID int64) (string, string) {
 		return libraryID, pathID
 	}
 
-	// Fallback to config defaults
-	b.config.Logger.Info("Using config defaults",
-		zap.String("library_id", b.config.BookloreAPI.DefaultLibraryID),
-		zap.String("path_id", b.config.BookloreAPI.DefaultPathID))
-	return b.config.BookloreAPI.DefaultLibraryID, b.config.BookloreAPI.DefaultPathID
+	// No fallback - user must configure library
+	b.config.Logger.Info("User has no library configured")
+	return "", ""
 }
 
 // handlePathSelection presents path selection inline keyboard for a library

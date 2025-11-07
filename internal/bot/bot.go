@@ -89,7 +89,7 @@ func (b *Bot) Start() error {
 				b.handleLibrarySelectCallback(update.CallbackQuery)
 			} else if strings.HasPrefix(callbackData, "select_path_") {
 				b.handlePathSelectCallback(update.CallbackQuery)
-			} else if callbackData == "prompt_set_library" || callbackData == "import_continue_anyway" || callbackData == "import_cancel_prompt" {
+			} else if callbackData == "prompt_set_library" || callbackData == "import_cancel_prompt" {
 				b.handleLibraryPromptCallback(update.CallbackQuery)
 			}
 		}
