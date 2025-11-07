@@ -748,7 +748,7 @@ func (b *Bot) triggerBookloreImport(chatID int64, filename string) string {
 		}
 
 		// Finalize all imports
-		result, err := b.booklore.FinalizeAllImports(ctx)
+		result, err := b.booklore.FinalizeAllImports(ctx, b.config.BookloreAPI.DefaultLibraryID, b.config.BookloreAPI.DefaultPathID)
 		if err != nil {
 			b.config.Logger.Error("Failed to finalize Booklore import",
 				zap.String("filename", filename),
@@ -863,7 +863,7 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 			zap.Any("file_ids", fileIDs))
 
 		// Import all files
-		result, err := b.booklore.FinalizeImport(ctx, fileIDs)
+		result, err := b.booklore.FinalizeImport(ctx, fileIDs, b.config.BookloreAPI.DefaultLibraryID, b.config.BookloreAPI.DefaultPathID)
 		if err != nil {
 			editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, fmt.Sprintf("❌ Import failed: %s", err.Error()))
 			b.api.Send(editMsg)
@@ -902,7 +902,7 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 		b.api.Send(editMsg)
 
 		// Import the specific file
-		result, err := b.booklore.FinalizeImport(ctx, []int64{fileID})
+		result, err := b.booklore.FinalizeImport(ctx, []int64{fileID}, b.config.BookloreAPI.DefaultLibraryID, b.config.BookloreAPI.DefaultPathID)
 		if err != nil {
 			b.config.Logger.Error("Failed to import individual file",
 				zap.Int64("file_id", fileID),

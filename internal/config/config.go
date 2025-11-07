@@ -21,12 +21,14 @@ type Config struct {
 }
 
 type BookloreConfig struct {
-	APIURL        string
-	APIToken      string
-	AutoImport    bool
-	Enabled       bool
-	RetryAttempts int
-	RetryDelay    int // in seconds
+	APIURL         string
+	APIToken       string
+	AutoImport     bool
+	Enabled        bool
+	RetryAttempts  int
+	RetryDelay     int // in seconds
+	DefaultLibraryID string
+	DefaultPathID    string
 }
 
 func Load() (*Config, error) {
@@ -163,12 +165,18 @@ func loadBookloreConfig() *BookloreConfig {
 		}
 	}
 
+	// Get library configuration
+	defaultLibraryID := os.Getenv("BOOKLORE_DEFAULT_LIBRARY_ID")
+	defaultPathID := os.Getenv("BOOKLORE_DEFAULT_PATH_ID")
+
 	return &BookloreConfig{
-		APIURL:        strings.TrimSuffix(apiURL, "/"),
-		APIToken:      apiToken,
-		AutoImport:    autoImport,
-		Enabled:       enabled,
-		RetryAttempts: retryAttempts,
-		RetryDelay:    retryDelay,
+		APIURL:          strings.TrimSuffix(apiURL, "/"),
+		APIToken:        apiToken,
+		AutoImport:      autoImport,
+		Enabled:         enabled,
+		RetryAttempts:   retryAttempts,
+		RetryDelay:      retryDelay,
+		DefaultLibraryID: defaultLibraryID,
+		DefaultPathID:   defaultPathID,
 	}
 }

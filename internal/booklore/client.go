@@ -66,12 +66,22 @@ func (c *Client) RescanBookdrop(ctx context.Context) error {
 }
 
 // FinalizeImport finalizes the import of bookdrop files
-func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64) (*BookdropFinalizeResult, error) {
+func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64, libraryID, pathID string) (*BookdropFinalizeResult, error) {
 	if !c.IsEnabled() {
 		return nil, NewAPIError(ErrInvalidToken, "Booklore API client is not configured", 0)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize", c.baseURL)
+	// Add query parameters for library and path
+	var url string
+	if libraryID != "" {
+		if pathID != "" {
+			url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize?defaultLibraryId=%s&defaultPathId=%s", c.baseURL, libraryID, pathID)
+		} else {
+			url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize?defaultLibraryId=%s", c.baseURL, libraryID)
+		}
+	} else {
+		url = fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize", c.baseURL)
+	}
 
 	// Log the request details
 	c.logger.Info("FinalizeImport request",
@@ -123,7 +133,7 @@ func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64) (*Bookdrop
 }
 
 // FinalizeAllImports finalizes all available bookdrop imports
-func (c *Client) FinalizeAllImports(ctx context.Context) (*BookdropFinalizeResult, error) {
+func (c *Client) FinalizeAllImports(ctx context.Context, libraryID, pathID string) (*BookdropFinalizeResult, error) {
 	if !c.IsEnabled() {
 		return nil, NewAPIError(ErrInvalidToken, "Booklore API client is not configured", 0)
 	}
@@ -150,7 +160,7 @@ func (c *Client) FinalizeAllImports(ctx context.Context) (*BookdropFinalizeResul
 		fileIDs[i] = file.ID
 	}
 
-	return c.FinalizeImport(ctx, fileIDs)
+	return c.FinalizeImport(ctx, fileIDs, libraryID, pathID)
 }
 
 // GetBookdropFiles retrieves bookdrop files by status
