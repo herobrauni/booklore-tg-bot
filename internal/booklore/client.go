@@ -73,6 +73,12 @@ func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64) (*Bookdrop
 
 	url := fmt.Sprintf("%s/api/v1/bookdrop/imports/finalize", c.baseURL)
 
+	// Log the request details
+	c.logger.Info("FinalizeImport request",
+		zap.String("url", url),
+		zap.Int("file_ids_count", len(fileIDs)),
+		zap.Any("file_ids", fileIDs))
+
 	request := BookdropFinalizeRequest{
 		FileIDs: fileIDs,
 	}
@@ -81,6 +87,10 @@ func (c *Client) FinalizeImport(ctx context.Context, fileIDs []int64) (*Bookdrop
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+
+	// Log the JSON payload
+	c.logger.Info("FinalizeImport JSON payload",
+		zap.String("json", string(jsonData)))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {

@@ -470,6 +470,16 @@ func (b *Bot) handleBookdropCommand(chatID int64) {
 		zap.Int("total_files", files.TotalElements),
 		zap.Int("files_in_content", len(files.Content)))
 
+	// Log detailed information about each file
+	for i, file := range files.Content {
+		b.config.Logger.Info("File details",
+			zap.Int("index", i),
+			zap.Int64("id", file.ID),
+			zap.String("filename", file.FileName),
+			zap.String("status", file.Status),
+			zap.String("date_added", file.DateAdded))
+	}
+
 	if files.TotalElements == 0 {
 		msg := tgbotapi.NewMessage(chatID, "📂 Bookdrop is empty. No files found.")
 		b.api.Send(msg)
@@ -585,6 +595,11 @@ func (b *Bot) handleImportCommand(chatID int64) {
 			break
 		}
 
+		b.config.Logger.Info("Creating file button",
+			zap.Int64("file_id", file.ID),
+			zap.String("file_name", file.FileName),
+			zap.String("file_status", file.Status))
+
 		buttonText := fmt.Sprintf("📄 %s (%.1f MB)",
 			truncateString(file.FileName, 40),
 			float64(file.FileSize)/1024/1024)
@@ -597,9 +612,16 @@ func (b *Bot) handleImportCommand(chatID int64) {
 	}
 
 	// Add "Import All" and "Cancel" buttons
-	if files.TotalElements > 1 {
+	if files.TotalElements >= 1 {
+		var importAllBtnText string
+		if files.TotalElements == 1 {
+			importAllBtnText = "📥 Import Book"
+		} else {
+			importAllBtnText = "📥 Import All"
+		}
+
 		importAllBtn := tgbotapi.InlineKeyboardButton{
-			Text:         "📥 Import All",
+			Text:         importAllBtnText,
 			CallbackData: &[]string{"import_all"}[0],
 		}
 		keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{importAllBtn})
@@ -830,7 +852,15 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 		fileIDs := make([]int64, len(files.Content))
 		for i, file := range files.Content {
 			fileIDs[i] = file.ID
+			b.config.Logger.Info("Added file to import all",
+				zap.Int64("file_id", file.ID),
+				zap.String("file_name", file.FileName),
+				zap.String("file_status", file.Status))
 		}
+
+		b.config.Logger.Info("Importing all files",
+			zap.Int("file_count", len(fileIDs)),
+			zap.Any("file_ids", fileIDs))
 
 		// Import all files
 		result, err := b.booklore.FinalizeImport(ctx, fileIDs)
@@ -853,9 +883,16 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 		var fileID int64
 		_, err := fmt.Sscanf(data, "import_%d", &fileID)
 		if err != nil {
+			b.config.Logger.Error("Failed to parse callback data",
+				zap.String("callback_data", data),
+				zap.Error(err))
 			b.api.Request(tgbotapi.NewCallback(callback.ID, "Invalid file ID"))
 			return
 		}
+
+		b.config.Logger.Info("Processing individual file import",
+			zap.Int64("file_id", fileID),
+			zap.String("callback_data", data))
 
 		callbackResponse := tgbotapi.NewCallback(callback.ID, "Importing selected file...")
 		b.api.Request(callbackResponse)
@@ -867,10 +904,18 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 		// Import the specific file
 		result, err := b.booklore.FinalizeImport(ctx, []int64{fileID})
 		if err != nil {
+			b.config.Logger.Error("Failed to import individual file",
+				zap.Int64("file_id", fileID),
+				zap.Error(err))
 			editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, fmt.Sprintf("❌ Import failed: %s", err.Error()))
 			b.api.Send(editMsg)
 			return
 		}
+
+		b.config.Logger.Info("Individual file import completed",
+			zap.Int64("file_id", fileID),
+			zap.Int("imported_count", result.ImportedCount),
+			zap.Int("failed_count", result.FailedCount))
 
 		var successMessage string
 		if result.ImportedCount > 0 {
@@ -878,7 +923,7 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 		} else if result.FailedCount > 0 {
 			successMessage = "❌ File import failed"
 		} else {
-			successMessage = "ℹ️ No files were imported"
+			successMessage = "ℹ️ No files were imported (file may already be imported or has invalid ID)"
 		}
 
 		editMsg = tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, successMessage)
