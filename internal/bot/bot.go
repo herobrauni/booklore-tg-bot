@@ -2,6 +2,7 @@ package bot
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/brauni/booklore-tg-bot/internal/auth"
 	"github.com/brauni/booklore-tg-bot/internal/booklore"
@@ -12,11 +13,12 @@ import (
 )
 
 type Bot struct {
-	api        *tgbotapi.BotAPI
-	config     *config.Config
-	auth       *auth.Authenticator
-	downloader *downloader.Downloader
-	booklore   *booklore.Client
+	api          *tgbotapi.BotAPI
+	config       *config.Config
+	auth         *auth.Authenticator
+	downloader   *downloader.Downloader
+	booklore     *booklore.Client
+	preferences  *booklore.PreferenceManager
 }
 
 func NewBot(cfg *config.Config) (*Bot, error) {
@@ -37,12 +39,16 @@ func NewBot(cfg *config.Config) (*Bot, error) {
 	// Initialize Booklore client
 	bookloreClient := booklore.NewClient(cfg.BookloreAPI.APIURL, cfg.BookloreAPI.APIToken, cfg.Logger)
 
+	// Initialize preference manager
+	preferenceManager := booklore.NewPreferenceManager(cfg.Logger)
+
 	return &Bot{
-		api:        api,
-		config:     cfg,
-		auth:       authenticator,
-		downloader: dl,
-		booklore:   bookloreClient,
+		api:         api,
+		config:      cfg,
+		auth:        authenticator,
+		downloader:  dl,
+		booklore:    bookloreClient,
+		preferences: preferenceManager,
 	}, nil
 }
 
@@ -73,7 +79,16 @@ func (b *Bot) Start() error {
 			b.handleMessage(update.Message)
 		}
 		if update.CallbackQuery != nil {
-			b.handleImportCallback(update.CallbackQuery)
+			callbackData := update.CallbackQuery.Data
+
+			// Handle different callback types
+			if strings.HasPrefix(callbackData, "import_") {
+				b.handleImportCallback(update.CallbackQuery)
+			} else if strings.HasPrefix(callbackData, "select_library_") {
+				b.handleLibrarySelectCallback(update.CallbackQuery)
+			} else if strings.HasPrefix(callbackData, "select_path_") {
+				b.handlePathSelectCallback(update.CallbackQuery)
+			}
 		}
 	}
 

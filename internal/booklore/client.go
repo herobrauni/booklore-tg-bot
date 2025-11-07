@@ -139,7 +139,7 @@ func (c *Client) FinalizeAllImports(ctx context.Context, libraryID, pathID strin
 	}
 
 	// Get all available files first
-	files, err := c.GetBookdropFiles(ctx, "NEW", 0, 1000) // Get up to 1000 new files
+	files, err := c.GetBookdropFilesNoStatus(ctx, 0, 1000) // Get up to 1000 files
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bookdrop files: %w", err)
 	}
@@ -276,6 +276,39 @@ func (c *Client) GetBookdropNotification(ctx context.Context) (*BookdropNotifica
 	}
 
 	return &result, nil
+}
+
+// GetLibraries retrieves all libraries available to the user
+func (c *Client) GetLibraries(ctx context.Context) ([]Library, error) {
+	if !c.IsEnabled() {
+		return nil, NewAPIError(ErrInvalidToken, "Booklore API client is not configured", 0)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/libraries", c.baseURL)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	c.setAuthHeader(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, NewNetworkError(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.handleAPIError(resp)
+	}
+
+	var libraries []Library
+	if err := json.NewDecoder(resp.Body).Decode(&libraries); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return libraries, nil
 }
 
 // setAuthHeader sets the authorization header for API requests

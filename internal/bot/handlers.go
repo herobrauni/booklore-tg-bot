@@ -91,7 +91,7 @@ func (b *Bot) handleDocument(message *tgbotapi.Message) {
 	}
 
 	// Trigger Booklore import if enabled
-	importStatus := b.triggerBookloreImport(message.Chat.ID, document.FileName)
+	importStatus := b.triggerBookloreImport(message.Chat.ID, userID, document.FileName)
 
 	// Prepare success message
 	successMsg := fmt.Sprintf("✅ File '%s' downloaded successfully!", document.FileName)
@@ -153,7 +153,7 @@ func (b *Bot) handlePhoto(message *tgbotapi.Message) {
 	}
 
 	// Trigger Booklore import if enabled
-	importStatus := b.triggerBookloreImport(message.Chat.ID, filename)
+	importStatus := b.triggerBookloreImport(message.Chat.ID, userID, filename)
 
 	// Prepare success message
 	successMsg := fmt.Sprintf("✅ Photo '%s' downloaded successfully!", filename)
@@ -228,7 +228,7 @@ func (b *Bot) downloadMediaFile(message *tgbotapi.Message, fileID, filename, med
 	}
 
 	// Trigger Booklore import if enabled
-	importStatus := b.triggerBookloreImport(message.Chat.ID, filename)
+	importStatus := b.triggerBookloreImport(message.Chat.ID, userID, filename)
 
 	// Prepare success message
 	successMsg := fmt.Sprintf("✅ %s '%s' downloaded successfully!", mediaType, filename)
@@ -243,6 +243,7 @@ func (b *Bot) downloadMediaFile(message *tgbotapi.Message, fileID, filename, med
 
 func (b *Bot) handleTextMessage(message *tgbotapi.Message) {
 	text := message.Text
+	userID := message.From.ID
 
 	// Handle commands
 	if text == "/start" || text == "/help" {
@@ -251,7 +252,7 @@ func (b *Bot) handleTextMessage(message *tgbotapi.Message) {
 	}
 
 	if text == "/status" {
-		b.sendStatusMessage(message.Chat.ID)
+		b.sendStatusMessage(message.Chat.ID, userID)
 		return
 	}
 
@@ -272,6 +273,16 @@ func (b *Bot) handleTextMessage(message *tgbotapi.Message) {
 
 	if text == "/debug_bookdrop" {
 		b.handleDebugBookdropCommand(message.Chat.ID)
+		return
+	}
+
+	if text == "/libraries" {
+		b.handleLibrariesCommand(message.Chat.ID, userID)
+		return
+	}
+
+	if text == "/set_library" {
+		b.handleSetLibraryCommand(message.Chat.ID, userID)
 		return
 	}
 
@@ -380,7 +391,9 @@ I can download files you send me and save them to my storage.`
 		helpText += `
 /bookdrop - List all files in bookdrop
 /rescan - Scan bookdrop for new files
-/import - Select files for import to library`
+/import - Select files for import to library
+/libraries - List available libraries
+/set_library - Choose your preferred library`
 		// Debug command - not shown in help but available
 		// /debug_bookdrop - Test different API endpoints
 	}
@@ -404,7 +417,7 @@ If Booklore integration is enabled, your books will be automatically imported to
 	b.api.Send(msg)
 }
 
-func (b *Bot) sendStatusMessage(chatID int64) {
+func (b *Bot) sendStatusMessage(chatID int64, userID int64) {
 	statusText := fmt.Sprintf(`📊 *Bot Status*
 
 🤖 Bot: %s
@@ -420,13 +433,22 @@ func (b *Bot) sendStatusMessage(chatID int64) {
 
 	// Add Booklore status if configured
 	if b.booklore.IsEnabled() {
+		// Get user's library preference
+		pref := b.preferences.GetUserPreference(userID)
+		libraryInfo := "Default library"
+		if pref.HasLibrary() {
+			libraryInfo = fmt.Sprintf("%s (📁 %s)", pref.GetLibraryName(), pref.GetPathName())
+		}
+
 		statusText += fmt.Sprintf(`
 
 📚 *Booklore Integration*
 🔗 API URL: %s
-📤 Auto-import: %t`,
+📤 Auto-import: %t
+🏛️ Library: %s`,
 			b.config.BookloreAPI.APIURL,
-			b.config.BookloreAPI.AutoImport)
+			b.config.BookloreAPI.AutoImport,
+			libraryInfo)
 	} else {
 		statusText += `
 
@@ -571,8 +593,8 @@ func (b *Bot) handleImportCommand(chatID int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Get only NEW files for import
-	files, err := b.booklore.GetBookdropFiles(ctx, "NEW", 0, 20) // Get up to 20 new files
+	// Get all files for import (not just NEW files)
+	files, err := b.booklore.GetBookdropFilesNoStatus(ctx, 0, 20) // Get up to 20 files
 	if err != nil {
 		b.config.Logger.Error("Failed to get bookdrop files for import",
 			zap.Error(err))
@@ -600,7 +622,24 @@ func (b *Bot) handleImportCommand(chatID int64) {
 			zap.String("file_name", file.FileName),
 			zap.String("file_status", file.Status))
 
-		buttonText := fmt.Sprintf("📄 %s (%.1f MB)",
+		statusEmoji := ""
+		switch file.Status {
+		case "NEW":
+			statusEmoji = "🆕"
+		case "PENDING_REVIEW":
+			statusEmoji = "⏳"
+		case "PROCESSED":
+			statusEmoji = "🔍"
+		case "IMPORTED":
+			statusEmoji = "✅"
+		case "FAILED":
+			statusEmoji = "❌"
+		default:
+			statusEmoji = "📄"
+		}
+
+		buttonText := fmt.Sprintf("%s %s (%.1f MB)",
+			statusEmoji,
 			truncateString(file.FileName, 40),
 			float64(file.FileSize)/1024/1024)
 
@@ -708,14 +747,252 @@ func (b *Bot) handleDebugBookdropCommand(chatID int64) {
 	b.api.Send(msg)
 }
 
+func (b *Bot) handleLibrariesCommand(chatID int64, userID int64) {
+	if !b.booklore.IsEnabled() {
+		msg := tgbotapi.NewMessage(chatID, "❌ Booklore integration is not enabled.")
+		b.api.Send(msg)
+		return
+	}
+
+	// Send typing indicator
+	action := tgbotapi.NewChatAction(chatID, "typing")
+	b.api.Send(action)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get user's current preference
+	pref := b.preferences.GetUserPreference(userID)
+	currentLibMsg := ""
+	if pref.HasLibrary() {
+		currentLibMsg = fmt.Sprintf("\n📚 **Current Library**: %s", pref.GetLibraryName())
+	}
+
+	// Fetch libraries
+	libraries, err := b.booklore.GetLibraries(ctx)
+	if err != nil {
+		b.config.Logger.Error("Failed to get libraries",
+			zap.Error(err))
+		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to retrieve libraries: %s", err.Error()))
+		b.api.Send(msg)
+		return
+	}
+
+	if len(libraries) == 0 {
+		msg := tgbotapi.NewMessage(chatID, "📚 No libraries found. Make sure you have access to libraries in Booklore.")
+		b.api.Send(msg)
+		return
+	}
+
+	// Create message with library list
+	message := fmt.Sprintf("📚 *Available Libraries*\n\nFound %d libraries:%s\n\n", len(libraries), currentLibMsg)
+
+	for i, lib := range libraries {
+		icon := "📚"
+		if lib.Icon != "" {
+			icon = lib.Icon
+		}
+
+		watchStatus := ""
+		if lib.Watch {
+			watchStatus = " (👁️ Watching)"
+		}
+
+		message += fmt.Sprintf("%d. %s **%s**%s\n   ID: %d\n\n",
+			i+1, icon, lib.Name, watchStatus, lib.ID)
+	}
+
+	message += "💡 Use /set_library to select your preferred library for imports."
+
+	msg := tgbotapi.NewMessage(chatID, message)
+	msg.ParseMode = "Markdown"
+	b.api.Send(msg)
+}
+
+func (b *Bot) handleSetLibraryCommand(chatID int64, userID int64) {
+	if !b.booklore.IsEnabled() {
+		msg := tgbotapi.NewMessage(chatID, "❌ Booklore integration is not enabled.")
+		b.api.Send(msg)
+		return
+	}
+
+	// Send typing indicator
+	action := tgbotapi.NewChatAction(chatID, "typing")
+	b.api.Send(action)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Fetch libraries
+	libraries, err := b.booklore.GetLibraries(ctx)
+	if err != nil {
+		b.config.Logger.Error("Failed to get libraries for selection",
+			zap.Error(err))
+		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to retrieve libraries: %s", err.Error()))
+		b.api.Send(msg)
+		return
+	}
+
+	if len(libraries) == 0 {
+		msg := tgbotapi.NewMessage(chatID, "📚 No libraries available for selection.")
+		b.api.Send(msg)
+		return
+	}
+
+	// Create inline keyboard for library selection
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	for i, lib := range libraries {
+		if i >= 8 { // Limit to 8 libraries to keep message manageable
+			break
+		}
+
+		icon := "📚"
+		if lib.Icon != "" {
+			icon = lib.Icon
+		}
+
+		buttonText := fmt.Sprintf("%s %s", icon, lib.Name)
+		callbackData := fmt.Sprintf("select_library_%d", lib.ID)
+
+		keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{
+			{Text: buttonText, CallbackData: &callbackData},
+		})
+	}
+
+	// Add cancel button
+	cancelBtn := tgbotapi.InlineKeyboardButton{
+		Text:         "❌ Cancel",
+		CallbackData: &[]string{"library_cancel"}[0],
+	}
+	keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{cancelBtn})
+
+	replyMarkup := tgbotapi.NewInlineKeyboardMarkup(keyboard...)
+
+	message := "📚 *Select Library*\n\nChoose the library where you want books to be imported:"
+	pref := b.preferences.GetUserPreference(userID)
+	if pref.HasLibrary() {
+		message += fmt.Sprintf("\n\n📋 **Current**: %s", pref.GetLibraryName())
+	}
+
+	msg := tgbotapi.NewMessage(chatID, message)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = replyMarkup
+	b.api.Send(msg)
+}
+
+func (b *Bot) handleLibrarySelectCallback(callback *tgbotapi.CallbackQuery) {
+	chatID := callback.Message.Chat.ID
+	data := callback.Data
+
+	if data == "library_cancel" {
+		callbackResponse := tgbotapi.NewCallback(callback.ID, "Selection cancelled")
+		b.api.Request(callbackResponse)
+
+		editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, "❌ Library selection cancelled")
+		b.api.Send(editMsg)
+		return
+	}
+
+	if strings.HasPrefix(data, "select_library_") {
+		var libraryID int64
+		_, err := fmt.Sscanf(data, "select_library_%d", &libraryID)
+		if err != nil {
+			b.config.Logger.Error("Failed to parse library callback data",
+				zap.String("callback_data", data),
+				zap.Error(err))
+			b.api.Request(tgbotapi.NewCallback(callback.ID, "Invalid library ID"))
+			return
+		}
+
+		callbackResponse := tgbotapi.NewCallback(callback.ID, "Loading library paths...")
+		b.api.Request(callbackResponse)
+
+		// Show processing message
+		editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, "🔄 Loading library paths...")
+		b.api.Send(editMsg)
+
+		// Get library details to find paths
+	libraryDetails, err := b.getLibraryDetails(libraryID)
+		if err != nil {
+			b.config.Logger.Error("Failed to get library details",
+				zap.Int64("library_id", libraryID),
+				zap.Error(err))
+			editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, fmt.Sprintf("❌ Failed to load library details: %s", err.Error()))
+			b.api.Send(editMsg)
+			return
+		}
+
+		// Handle path selection
+		b.handlePathSelection(chatID, libraryID, libraryDetails)
+	}
+}
+
+func (b *Bot) handlePathSelectCallback(callback *tgbotapi.CallbackQuery) {
+	userID := callback.From.ID
+	chatID := callback.Message.Chat.ID
+	data := callback.Data
+
+	if data == "path_cancel" {
+		callbackResponse := tgbotapi.NewCallback(callback.ID, "Path selection cancelled")
+		b.api.Request(callbackResponse)
+
+		editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, "❌ Path selection cancelled")
+		b.api.Send(editMsg)
+		return
+	}
+
+	if strings.HasPrefix(data, "select_path_") {
+		var libraryID int64
+		var pathID int64
+		var pathName string
+		_, err := fmt.Sscanf(data, "select_path_%d_%d", &libraryID, &pathID)
+		if err != nil {
+			b.config.Logger.Error("Failed to parse path callback data",
+				zap.String("callback_data", data),
+				zap.Error(err))
+			b.api.Request(tgbotapi.NewCallback(callback.ID, "Invalid path ID"))
+			return
+		}
+
+		// Get path name from callback data (encoded in the callback)
+		parts := strings.Split(data, "_")
+		if len(parts) >= 3 {
+			// Reconstruct path name (everything after the second ID)
+			pathName = strings.Join(parts[3:], "_")
+		}
+
+		callbackResponse := tgbotapi.NewCallback(callback.ID, "Setting library preference...")
+		b.api.Request(callbackResponse)
+
+		// Get library name
+		libraryDetails, err := b.getLibraryDetails(libraryID)
+		if err != nil {
+			editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, fmt.Sprintf("❌ Failed to set preference: %s", err.Error()))
+			b.api.Send(editMsg)
+			return
+		}
+
+		// Set user preference
+		b.preferences.SetUserPreference(userID, libraryID, pathID, libraryDetails.Name, pathName)
+
+		successMsg := fmt.Sprintf("✅ Library preference set!\n\n📚 **Library**: %s\n📁 **Path**: %s\n\nAll imports will now go to this library and path.",
+			libraryDetails.Name, pathName)
+
+		editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, successMsg)
+		b.api.Send(editMsg)
+	}
+}
+
 // triggerBookloreImport triggers the Booklore import process after a file download
-func (b *Bot) triggerBookloreImport(chatID int64, filename string) string {
+func (b *Bot) triggerBookloreImport(chatID int64, userID int64, filename string) string {
 	if !b.booklore.IsEnabled() || !b.config.BookloreAPI.AutoImport {
 		return ""
 	}
 
 	b.config.Logger.Info("Triggering Booklore import",
-		zap.String("filename", filename))
+		zap.String("filename", filename),
+		zap.Int64("user_id", userID))
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -728,6 +1005,9 @@ func (b *Bot) triggerBookloreImport(chatID int64, filename string) string {
 			zap.Error(err))
 		return fmt.Sprintf("📥 File downloaded, but failed to trigger Booklore scan: %s", err.Error())
 	}
+
+	// Get library IDs for user
+	libraryID, pathID := b.getLibraryIDsForUser(userID)
 
 	// Wait a moment for Booklore to process the file, then retry import
 	maxRetries := 3
@@ -748,7 +1028,7 @@ func (b *Bot) triggerBookloreImport(chatID int64, filename string) string {
 		}
 
 		// Finalize all imports
-		result, err := b.booklore.FinalizeAllImports(ctx, b.config.BookloreAPI.DefaultLibraryID, b.config.BookloreAPI.DefaultPathID)
+		result, err := b.booklore.FinalizeAllImports(ctx, libraryID, pathID)
 		if err != nil {
 			b.config.Logger.Error("Failed to finalize Booklore import",
 				zap.String("filename", filename),
@@ -812,6 +1092,7 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 
 	data := callback.Data
 	chatID := callback.Message.Chat.ID
+	userID := callback.From.ID
 
 	if data == "import_cancel" {
 		callbackResponse := tgbotapi.NewCallback(callback.ID, "Import cancelled")
@@ -862,8 +1143,11 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 			zap.Int("file_count", len(fileIDs)),
 			zap.Any("file_ids", fileIDs))
 
+		// Get library IDs for user
+		libraryID, pathID := b.getLibraryIDsForUser(userID)
+
 		// Import all files
-		result, err := b.booklore.FinalizeImport(ctx, fileIDs, b.config.BookloreAPI.DefaultLibraryID, b.config.BookloreAPI.DefaultPathID)
+		result, err := b.booklore.FinalizeImport(ctx, fileIDs, libraryID, pathID)
 		if err != nil {
 			editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, fmt.Sprintf("❌ Import failed: %s", err.Error()))
 			b.api.Send(editMsg)
@@ -901,8 +1185,11 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 		editMsg := tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, "📥 Importing selected file...")
 		b.api.Send(editMsg)
 
+		// Get library IDs for user
+		libraryID, pathID := b.getLibraryIDsForUser(userID)
+
 		// Import the specific file
-		result, err := b.booklore.FinalizeImport(ctx, []int64{fileID}, b.config.BookloreAPI.DefaultLibraryID, b.config.BookloreAPI.DefaultPathID)
+		result, err := b.booklore.FinalizeImport(ctx, []int64{fileID}, libraryID, pathID)
 		if err != nil {
 			b.config.Logger.Error("Failed to import individual file",
 				zap.Int64("file_id", fileID),
@@ -929,4 +1216,82 @@ func (b *Bot) handleImportCallback(callback *tgbotapi.CallbackQuery) {
 		editMsg = tgbotapi.NewEditMessageText(chatID, callback.Message.MessageID, successMessage)
 		b.api.Send(editMsg)
 	}
+}
+
+// getLibraryDetails fetches library details including paths
+func (b *Bot) getLibraryDetails(libraryID int64) (*booklore.Library, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	libraries, err := b.booklore.GetLibraries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get libraries: %w", err)
+	}
+
+	for _, lib := range libraries {
+		if lib.ID == libraryID {
+			return &lib, nil
+		}
+	}
+
+	return nil, fmt.Errorf("library with ID %d not found", libraryID)
+}
+
+// getLibraryIDsForUser gets library and path IDs for a user, falling back to config defaults
+func (b *Bot) getLibraryIDsForUser(userID int64) (string, string) {
+	pref := b.preferences.GetUserPreference(userID)
+
+	if pref.HasLibrary() {
+		libraryID := fmt.Sprintf("%d", pref.GetLibraryID())
+		pathID := fmt.Sprintf("%d", pref.GetPathID())
+		return libraryID, pathID
+	}
+
+	// Fallback to config defaults
+	return b.config.BookloreAPI.DefaultLibraryID, b.config.BookloreAPI.DefaultPathID
+}
+
+// handlePathSelection presents path selection inline keyboard for a library
+func (b *Bot) handlePathSelection(chatID int64, libraryID int64, library *booklore.Library) {
+	if len(library.Paths) == 0 {
+		// If no paths, use library ID as both library and path
+		editMsg := tgbotapi.NewEditMessageText(chatID, 0, "⚠️ This library has no specific paths. Using library as default path.")
+		b.api.Send(editMsg)
+		return
+	}
+
+	// Create inline keyboard for path selection
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	for _, path := range library.Paths {
+		buttonText := fmt.Sprintf("📁 %s", path.Name)
+		callbackData := fmt.Sprintf("select_path_%d_%d", libraryID, path.ID)
+
+		keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{
+			{Text: buttonText, CallbackData: &callbackData},
+		})
+	}
+
+	// Add option to use library root
+	rootBtn := tgbotapi.InlineKeyboardButton{
+		Text:         "📚 Library Root",
+		CallbackData: &[]string{fmt.Sprintf("select_path_%d_%d", libraryID, libraryID)}[0],
+	}
+	keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{rootBtn})
+
+	// Add cancel button
+	cancelBtn := tgbotapi.InlineKeyboardButton{
+		Text:         "❌ Cancel",
+		CallbackData: &[]string{"path_cancel"}[0],
+	}
+	keyboard = append(keyboard, []tgbotapi.InlineKeyboardButton{cancelBtn})
+
+	replyMarkup := tgbotapi.NewInlineKeyboardMarkup(keyboard...)
+
+	message := fmt.Sprintf("📁 *Select Path*\n\nChoose the path within **%s** where books should be imported:", library.Name)
+
+	msg := tgbotapi.NewMessage(chatID, message)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = replyMarkup
+	b.api.Send(msg)
 }

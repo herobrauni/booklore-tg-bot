@@ -54,3 +54,30 @@ type PageBookdropFile struct {
 	First         bool           `json:"first"`
 	Last          bool           `json:"last"`
 }
+
+// Library represents a Booklore library
+type Library struct {
+	ID                  int64      `json:"id"`
+	Name                string     `json:"name"`
+	Icon                string     `json:"icon"`
+	Watch               bool       `json:"watch"`
+	ScanMode            string     `json:"scanMode"`
+	DefaultBookFormat   string     `json:"fileNamingPattern"`
+	Paths               []LibraryPath `json:"paths"`
+}
+
+// LibraryPath represents a path within a library
+type LibraryPath struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Parent int64  `json:"parent"`
+}
+
+// UserLibraryPreference stores user's selected library and path
+type UserLibraryPreference struct {
+	UserID     int64  `json:"userId"`
+	LibraryID  int64  `json:"libraryId"`
+	PathID     int64  `json:"pathId"`
+	LibraryName string `json:"libraryName"`
+	PathName    string `json:"pathName"`
+}
