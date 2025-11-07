@@ -11,12 +11,20 @@ import (
 )
 
 type Config struct {
-	BotToken        string
-	AllowedUserIDs  []int64
-	DownloadFolder  string
+	BotToken         string
+	AllowedUserIDs   []int64
+	DownloadFolder   string
 	AllowedFileTypes []string
-	MaxFileSizeMB   int64
-	Logger          *zap.Logger
+	MaxFileSizeMB    int64
+	Logger           *zap.Logger
+	BookloreAPI      *BookloreConfig
+}
+
+type BookloreConfig struct {
+	APIURL     string
+	APIToken   string
+	AutoImport bool
+	Enabled    bool
 }
 
 func Load() (*Config, error) {
@@ -87,6 +95,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to create download folder: %w", err)
 	}
 
+	// Load Booklore API configuration
+	bookloreConfig := loadBookloreConfig()
+
 	return &Config{
 		BotToken:         botToken,
 		AllowedUserIDs:   allowedUserIDs,
@@ -94,6 +105,7 @@ func Load() (*Config, error) {
 		AllowedFileTypes: allowedFileTypes,
 		MaxFileSizeMB:    maxFileSizeMB,
 		Logger:           logger,
+		BookloreAPI:      bookloreConfig,
 	}, nil
 }
 
@@ -110,4 +122,31 @@ func parseUserIDs(userIDsStr string) ([]int64, error) {
 	}
 
 	return userIDs, nil
+}
+
+func loadBookloreConfig() *BookloreConfig {
+	// Get Booklore API configuration from environment
+	apiURL := os.Getenv("BOOKLORE_API_URL")
+	if apiURL == "" {
+		apiURL = "https://booklore.brauni.dev"
+	}
+
+	apiToken := os.Getenv("BOOKLORE_API_TOKEN")
+	autoImportStr := os.Getenv("BOOKLORE_AUTO_IMPORT")
+
+	// Only enable Booklore integration if API token is provided
+	enabled := apiToken != ""
+
+	// Parse auto-import setting (default to true if enabled)
+	autoImport := enabled
+	if autoImportStr != "" {
+		autoImport = strings.ToLower(autoImportStr) == "true"
+	}
+
+	return &BookloreConfig{
+		APIURL:     strings.TrimSuffix(apiURL, "/"),
+		APIToken:   apiToken,
+		AutoImport: autoImport,
+		Enabled:    enabled,
+	}
 }

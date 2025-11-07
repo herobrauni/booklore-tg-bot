@@ -1,8 +1,10 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"go.uber.org/zap"
@@ -87,9 +89,17 @@ func (b *Bot) handleDocument(message *tgbotapi.Message) {
 		return
 	}
 
+	// Trigger Booklore import if enabled
+	importStatus := b.triggerBookloreImport(message.Chat.ID, document.FileName)
+
+	// Prepare success message
+	successMsg := fmt.Sprintf("✅ File '%s' downloaded successfully!", document.FileName)
+	if importStatus != "" {
+		successMsg = importStatus
+	}
+
 	// Send success message
-	msg := tgbotapi.NewMessage(message.Chat.ID,
-		fmt.Sprintf("✅ File '%s' downloaded successfully!", document.FileName))
+	msg := tgbotapi.NewMessage(message.Chat.ID, successMsg)
 	b.api.Send(msg)
 }
 
@@ -141,9 +151,17 @@ func (b *Bot) handlePhoto(message *tgbotapi.Message) {
 		return
 	}
 
+	// Trigger Booklore import if enabled
+	importStatus := b.triggerBookloreImport(message.Chat.ID, filename)
+
+	// Prepare success message
+	successMsg := fmt.Sprintf("✅ Photo '%s' downloaded successfully!", filename)
+	if importStatus != "" {
+		successMsg = importStatus
+	}
+
 	// Send success message
-	msg := tgbotapi.NewMessage(message.Chat.ID,
-		fmt.Sprintf("✅ Photo '%s' downloaded successfully!", filename))
+	msg := tgbotapi.NewMessage(message.Chat.ID, successMsg)
 	b.api.Send(msg)
 }
 
@@ -208,9 +226,17 @@ func (b *Bot) downloadMediaFile(message *tgbotapi.Message, fileID, filename, med
 		return
 	}
 
+	// Trigger Booklore import if enabled
+	importStatus := b.triggerBookloreImport(message.Chat.ID, filename)
+
+	// Prepare success message
+	successMsg := fmt.Sprintf("✅ %s '%s' downloaded successfully!", mediaType, filename)
+	if importStatus != "" {
+		successMsg = importStatus
+	}
+
 	// Send success message
-	msg := tgbotapi.NewMessage(message.Chat.ID,
-		fmt.Sprintf("✅ %s '%s' downloaded successfully!", mediaType, filename))
+	msg := tgbotapi.NewMessage(message.Chat.ID, successMsg)
 	b.api.Send(msg)
 }
 
@@ -300,13 +326,30 @@ func (b *Bot) sendUnsupportedMessage(chatID int64) {
 func (b *Bot) sendHelpMessage(chatID int64) {
 	helpText := `🤖 *Telegram File Downloader Bot*
 
-I can download files you send me and save them to my storage.
+I can download files you send me and save them to my storage.`
+
+	// Add Booklore integration info if enabled
+	if b.booklore.IsEnabled() {
+		helpText += `
+📚 *Booklore Integration Enabled*
+• Automatic import to Booklore library
+• Smart book detection and processing`
+	}
+
+	helpText += `
 
 *Features:*
 • Download documents, photos, audio, and videos
 • File type restrictions for security
 • File size limits (configurable)
-• User access control
+• User access control`
+
+	if b.booklore.IsEnabled() {
+		helpText += `
+• Automatic Booklore library integration`
+	}
+
+	helpText += `
 
 *Commands:*
 /start or /help - Show this help message
@@ -317,6 +360,12 @@ I can download files you send me and save them to my storage.
 *Max file size:* ` + fmt.Sprintf("%d MB", b.config.MaxFileSizeMB) + `
 
 Simply send me any file and I'll download it for you!`
+
+	if b.booklore.IsEnabled() {
+		helpText += `
+
+If Booklore integration is enabled, your books will be automatically imported to the library.`
+	}
 
 	msg := tgbotapi.NewMessage(chatID, helpText)
 	msg.ParseMode = "Markdown"
@@ -337,9 +386,66 @@ func (b *Bot) sendStatusMessage(chatID int64) {
 		len(b.config.AllowedFileTypes),
 		b.config.MaxFileSizeMB)
 
+	// Add Booklore status if configured
+	if b.booklore.IsEnabled() {
+		statusText += fmt.Sprintf(`
+
+📚 *Booklore Integration*
+🔗 API URL: %s
+📤 Auto-import: %t`,
+			b.config.BookloreAPI.APIURL,
+			b.config.BookloreAPI.AutoImport)
+	} else {
+		statusText += `
+
+📚 Booklore Integration: ❌ Disabled`
+	}
+
 	msg := tgbotapi.NewMessage(chatID, statusText)
 	msg.ParseMode = "Markdown"
 	b.api.Send(msg)
+}
+
+// triggerBookloreImport triggers the Booklore import process after a file download
+func (b *Bot) triggerBookloreImport(chatID int64, filename string) string {
+	if !b.booklore.IsEnabled() || !b.config.BookloreAPI.AutoImport {
+		return ""
+	}
+
+	b.config.Logger.Info("Triggering Booklore import",
+		zap.String("filename", filename))
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// First rescan the bookdrop folder
+	if err := b.booklore.RescanBookdrop(ctx); err != nil {
+		b.config.Logger.Error("Failed to rescan bookdrop folder",
+			zap.String("filename", filename),
+			zap.Error(err))
+		return fmt.Sprintf("📥 File downloaded, but failed to trigger Booklore scan: %s", err.Error())
+	}
+
+	// Then finalize all imports
+	result, err := b.booklore.FinalizeAllImports(ctx)
+	if err != nil {
+		b.config.Logger.Error("Failed to finalize Booklore import",
+			zap.String("filename", filename),
+			zap.Error(err))
+		return fmt.Sprintf("📥 File downloaded, but failed to complete Booklore import: %s", err.Error())
+	}
+
+	if result.ImportedCount > 0 {
+		b.config.Logger.Info("Booklore import completed successfully",
+			zap.String("filename", filename),
+			zap.Int("imported_count", result.ImportedCount))
+		return fmt.Sprintf("📚 File downloaded and imported to Booklore successfully! (%d books imported)", result.ImportedCount)
+	} else if result.FailedCount > 0 {
+		return fmt.Sprintf("📥 File downloaded, but %d books failed to import to Booklore", result.FailedCount)
+	} else {
+		return "📥 File downloaded to bookdrop, but no new books were imported"
+	}
 }
 
 // Helper function for case-insensitive string matching
