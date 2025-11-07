@@ -26,12 +26,14 @@ services:
       - BOOKLORE_API_URL=${BOOKLORE_API_URL:-https://booklore.brauni.dev}
       - BOOKLORE_API_TOKEN=${BOOKLORE_API_TOKEN}
       - BOOKLORE_AUTO_IMPORT=${BOOKLORE_AUTO_IMPORT:-true}
-      - BOOKLORE_DEFAULT_LIBRARY_ID=${BOOKLORE_DEFAULT_LIBRARY_ID}
-      - BOOKLORE_DEFAULT_PATH_ID=${BOOKLORE_DEFAULT_PATH_ID}
+      - BOOKLORE_DEFAULT_LIBRARY_ID=${BOOKLORE_DEFAULT_LIBRARY_ID:-1}
+      - BOOKLORE_DEFAULT_PATH_ID=${BOOKLORE_DEFAULT_PATH_ID:-1}
 
     volumes:
       # Mount downloads folder to host machine for persistent storage
       - /opt/booklore/bookdrop:/app/downloads
+      # Mount data folder for user preferences persistence
+      - /opt/booklore/data:/app/data
 
     # Optional: Add health check
     healthcheck:

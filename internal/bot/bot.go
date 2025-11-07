@@ -39,8 +39,9 @@ func NewBot(cfg *config.Config) (*Bot, error) {
 	// Initialize Booklore client
 	bookloreClient := booklore.NewClient(cfg.BookloreAPI.APIURL, cfg.BookloreAPI.APIToken, cfg.Logger)
 
-	// Initialize preference manager
-	preferenceManager := booklore.NewPreferenceManager(cfg.Logger)
+	// Initialize preference manager with persistent storage
+	preferencesPath := "/app/data/user_preferences.json"
+	preferenceManager := booklore.NewPreferenceManager(cfg.Logger, preferencesPath)
 
 	return &Bot{
 		api:         api,
@@ -88,6 +89,8 @@ func (b *Bot) Start() error {
 				b.handleLibrarySelectCallback(update.CallbackQuery)
 			} else if strings.HasPrefix(callbackData, "select_path_") {
 				b.handlePathSelectCallback(update.CallbackQuery)
+			} else if callbackData == "prompt_set_library" || callbackData == "import_continue_anyway" || callbackData == "import_cancel_prompt" {
+				b.handleLibraryPromptCallback(update.CallbackQuery)
 			}
 		}
 	}
