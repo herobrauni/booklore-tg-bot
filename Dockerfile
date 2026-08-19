@@ -1,5 +1,5 @@
 # Multi-stage build for Go application
-FROM golang:1.25-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 # Install git and ca-certificates
 RUN apk add --no-cache git ca-certificates
